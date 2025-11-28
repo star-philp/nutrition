@@ -1,0 +1,410 @@
+from fastapi import FastAPI, Depends, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from typing import List
+import shutil
+import os
+# 모델 추론을 위한 라이브러리 추가
+import numpy as np
+import tensorflow as tf
+from PIL import Image
+import io
+
+from app.core.db import engine, Base, get_db
+from app.models import recipe as models
+from app.models.rag import KnowledgeChunk
+from app.schemas import recipe as schemas
+from sqlalchemy import func, cast, Float
+from app.initial_data import initial_recipes, initial_ingredients, initial_recipe_ingredients # on_startup에서 사용
+
+# 데이터베이스에 테이블 자동 생성
+# __init__.py 파일에 모델들을 임포트 해두면 Base.metadata.create_all(bind=engine) 한 줄로 모든 테이블을 생성할 수 있습니다.
+Base.metadata.create_all(bind=engine)
+
+# 업로드된 파일을 저장할 디렉토리
+UPLOAD_DIRECTORY = "./uploads"
+if not os.path.exists(UPLOAD_DIRECTORY):
+    os.makedirs(UPLOAD_DIRECTORY)
+
+# --- AI 모델 로딩 ---
+# 경로를 프로젝트 루트 기준으로 수정합니다.
+MODEL_PATH = "ml/model/food_classifier_model.h5"
+CLASS_NAMES_PATH = "ml/model/class_names.txt"
+
+# main.py 파일의 위치를 기준으로 상대 경로를 계산합니다.
+# __file__은 현재 파일의 경로를 나타냅니다.
+# os.path.abspath(__file__) -> 현재 파일의 절대 경로
+# os.path.dirname(...) -> 디렉토리 경로
+# os.path.join(..., '..', '..') -> 두 단계 상위 디렉토리로 이동 (backend/app -> nutrition_env)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+MODEL_PATH_ABS = os.path.join(PROJECT_ROOT, MODEL_PATH)
+CLASS_NAMES_PATH_ABS = os.path.join(PROJECT_ROOT, CLASS_NAMES_PATH)
+
+model = None
+class_names = []
+
+try:
+    model = tf.keras.models.load_model(MODEL_PATH_ABS)
+    with open(CLASS_NAMES_PATH_ABS, 'r', encoding='utf-8') as f:
+        class_names = [line.strip() for line in f.readlines()]
+    print("[INFO] AI 모델과 클래스 이름을 성공적으로 불러왔습니다.")
+    print("클래스:", class_names)
+except Exception as e:
+    print(f"[ERROR] AI 모델 또는 클래스 파일 로딩에 실패했습니다: {e}")
+    model = None
+# --------------------
+
+
+app = FastAPI()
+
+# CORS 미들웨어 추가
+origins = [
+    "http://localhost",
+    "http://localhost:5173",
+    "http://localhost:5174", # Vite가 사용하는 새 포트 추가
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API 라우터를 추가할 수 있습니다. (나중에 확장성을 위해)
+# from app.api.v1 import api_router
+from app.api import rag_routes
+app.include_router(rag_routes.router)
+
+@app.get("/")
+def read_root():
+    return {"Hello": "World"}
+
+@app.get("/api/v1/recipes", response_model=List[schemas.Recipe])
+def read_recipes(db: Session = Depends(get_db)):
+    """
+    모든 레시피 목록을 반환합니다.
+    """
+    recipes = db.query(models.Recipe).all()
+    return recipes
+
+
+
+# 이미지 전처리 함수
+def preprocess_image(image_bytes: bytes):
+    """업로드된 이미지를 모델 입력에 맞게 전처리합니다."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = img.resize((224, 224))
+    img_array = tf.keras.preprocessing.image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0) # 배치 차원 추가
+    img_array /= 255.0 # 정규화
+    return img_array
+
+@app.post("/api/v1/predict")
+async def predict_image(db: Session = Depends(get_db), file: UploadFile = File(...)):
+    """
+    업로드된 이미지를 받아, 훈련된 AI 모델로 예측하고 결과를 반환합니다.
+    """
+    if not model or not class_names:
+        raise HTTPException(status_code=500, detail="AI 모델이 준비되지 않았습니다.")
+
+    # 파일 내용을 바이트로 읽기
+    contents = await file.read()
+
+    # 이미지 전처리
+    processed_image = preprocess_image(contents)
+
+    # 예측 수행
+    predictions = model.predict(processed_image)[0] # 첫 번째 (그리고 유일한) 결과 사용
+
+    # 예측 결과를 (클래스 이름, 확률) 쌍으로 변환
+    prediction_results = []
+    for i, score in enumerate(predictions):
+        prediction_results.append({"class_name": class_names[i], "score": float(score)})
+    
+    # 확률 순으로 정렬
+    prediction_results.sort(key=lambda x: x["score"], reverse=True)
+
+    # 데이터베이스에서 레시피 정보 가져오기
+    # 모델의 클래스 이름이 레시피 이름과 일치한다고 가정합니다.
+    # 예: '소고기_브로콜리_죽' -> '소고기 브로콜리 죽'
+    top_predictions_with_recipe = []
+    for pred in prediction_results:
+        recipe_name_in_db = pred["class_name"].replace('_', ' ')
+        recipe = db.query(models.Recipe).filter(models.Recipe.recipe_name == recipe_name_in_db).first()
+        
+        if recipe:
+            top_predictions_with_recipe.append({
+                "recipe_id": recipe.recipe_id,
+                "recipe_name": recipe.recipe_name,
+                "score": pred["score"]
+            })
+
+    return {
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "predictions": top_predictions_with_recipe
+    }
+
+# --- 새로운 영양 계산 헬퍼 함수 ---
+def calculate_nutrition_for_recipe(db: Session, recipe_id: str) -> schemas.CalculatedNutrition:
+    recipe_ingredients = db.query(models.RecipeIngredient).filter(models.RecipeIngredient.recipe_id == recipe_id).all()
+    
+    if not recipe_ingredients:
+        raise HTTPException(status_code=404, detail="해당 레시피의 재료 정보를 찾을 수 없습니다.")
+
+    total_calories = 0
+    total_protein = 0
+    total_carbs = 0
+    total_fat = 0
+
+    for item in recipe_ingredients:
+        # ingredient.calories_kcal는 Numeric(Decimal) 타입이므로 float으로 변환
+        total_calories += (float(item.ingredient.calories_kcal) / 100) * item.quantity_grams
+        total_protein += (float(item.ingredient.protein_g) / 100) * item.quantity_grams
+        total_carbs += (float(item.ingredient.carbs_g) / 100) * item.quantity_grams
+        total_fat += (float(item.ingredient.fat_g) / 100) * item.quantity_grams
+
+    return schemas.CalculatedNutrition(
+        calories_kcal=total_calories,
+        protein_g=total_protein,
+        carbs_g=total_carbs,
+        fat_g=total_fat
+    )
+
+
+@app.post("/api/v1/nutrition/calculate", response_model=schemas.CalculatedNutrition)
+def calculate_nutrition(request: schemas.NutritionCalculationRequest, db: Session = Depends(get_db)):
+    """
+    레시피 ID와 섭취량을 받아, 동적으로 계산된 최종 영양 정보를 반환합니다.
+    """
+    # 1인분 기준 영양 정보 계산
+    base_nutrition = calculate_nutrition_for_recipe(db, request.recipe_id)
+    
+    # 섭취량(portion) 적용
+    final_nutrition = schemas.CalculatedNutrition(
+        calories_kcal=base_nutrition.calories_kcal * request.portion,
+        protein_g=base_nutrition.protein_g * request.portion,
+        carbs_g=base_nutrition.carbs_g * request.portion,
+        fat_g=base_nutrition.fat_g * request.portion,
+    )
+    
+    return final_nutrition
+
+# --- User와 MealLog를 위한 API 엔드포인트 ---
+
+# 임시 사용자 생성 함수 (테스트용)
+def get_or_create_test_user(db: Session):
+    # Base.metadata.create_all(bind=engine) # 이 부분은 Alembic으로 관리하는 것이 좋습니다.
+    test_user = db.query(models.User).filter(models.User.id == 1).first()
+    if not test_user:
+        test_user = models.User(id=1, username="testuser")
+        db.add(test_user)
+        db.commit()
+        db.refresh(test_user)
+    return test_user
+
+@app.on_event("startup")
+def on_startup():
+    # 애플리케이션 시작 시 DB 연결
+    db = next(get_db())
+    
+    # 1. 테스트 사용자 생성 또는 확인
+    get_or_create_test_user(db)
+    
+    # 2. 초기 식재료 데이터 생성
+    ingredient_count = db.query(models.Ingredient).count()
+    if ingredient_count == 0:
+        print("초기 식재료 데이터가 없습니다. 데이터베이스에 추가합니다...")
+        for ing_data in initial_ingredients:
+            db_ing = models.Ingredient(**ing_data)
+            db.add(db_ing)
+        db.commit()
+        print("초기 식재료 데이터 추가 완료.")
+
+    # 3. 초기 레시피 데이터 생성
+    recipe_count = db.query(models.Recipe).count()
+    if recipe_count == 0:
+        print("초기 레시피 데이터가 없습니다. 데이터베이스에 추가합니다...")
+        for recipe_data in initial_recipes:
+            db_recipe = models.Recipe(
+                recipe_id=recipe_data["recipe_id"],
+                recipe_name=recipe_data["recipe_name"],
+                category=recipe_data["category"],
+                description=recipe_data["description"]
+            )
+            db.add(db_recipe)
+        db.commit()
+        print("초기 레시피 데이터 추가 완료.")
+
+    # 4. 초기 레시피 구성 데이터 생성
+    recipe_ingredient_count = db.query(models.RecipeIngredient).count()
+    if recipe_ingredient_count == 0:
+        print("초기 레시피 구성 데이터가 없습니다. 데이터베이스에 추가합니다...")
+        for recipe_ing_data in initial_recipe_ingredients:
+            db_recipe_ing = models.RecipeIngredient(**recipe_ing_data)
+            db.add(db_recipe_ing)
+        db.commit()
+        print("초기 레시피 구성 데이터 추가 완료.")
+
+@app.post("/api/v1/meal-logs/", response_model=schemas.MealLog)
+def create_meal_log(
+    meal_log_data: schemas.MealLogCreate, 
+    db: Session = Depends(get_db)
+):
+    """
+    새로운 식단 기록을 생성합니다.
+    (현재는 user_id=1인 테스트 사용자에게 귀속됩니다)
+    """
+    # 섭취 영양소 계산 (새로운 헬퍼 함수 사용)
+    base_nutrition = calculate_nutrition_for_recipe(db, meal_log_data.recipe_id)
+
+    calculated_calories = base_nutrition.calories_kcal * meal_log_data.portion
+    calculated_protein = base_nutrition.protein_g * meal_log_data.portion
+    calculated_carbs = base_nutrition.carbs_g * meal_log_data.portion
+    calculated_fat = base_nutrition.fat_g * meal_log_data.portion
+
+    # 데이터베이스 모델 객체 생성
+    db_meal_log = models.MealLog(
+        user_id=1,  # 임시로 user_id 1 사용
+        recipe_id=meal_log_data.recipe_id,
+        portion=meal_log_data.portion,
+        calories_kcal=calculated_calories,
+        protein_g=calculated_protein,
+        carbs_g=calculated_carbs,
+        fat_g=calculated_fat
+    )
+    
+    db.add(db_meal_log)
+    db.commit()
+    db.refresh(db_meal_log)
+    
+    return db_meal_log
+
+@app.get("/api/v1/users/{user_id}/meal-logs/", response_model=List[schemas.MealLog])
+def read_user_meal_logs(user_id: int, db: Session = Depends(get_db)):
+    """
+    특정 사용자의 모든 식단 기록을 조회합니다.
+    """
+    meal_logs = db.query(models.MealLog).filter(models.MealLog.user_id == user_id).order_by(models.MealLog.meal_time.desc()).all()
+    return meal_logs 
+
+@app.get("/api/v1/users/{user_id}/daily-summary", response_model=List[schemas.DailyNutritionSummary])
+def read_daily_summary(user_id: int, db: Session = Depends(get_db)):
+    """
+    특정 사용자의 일자별 총 섭취 영양 합계를 반환합니다.
+    """
+    results = (
+        db.query(
+            func.to_char(models.MealLog.meal_time, 'YYYY-MM-DD').label('date'),
+            func.sum(models.MealLog.calories_kcal).label('total_calories_kcal'),
+            func.sum(models.MealLog.protein_g).label('total_protein_g'),
+            func.sum(models.MealLog.carbs_g).label('total_carbs_g'),
+            func.sum(models.MealLog.fat_g).label('total_fat_g'),
+        )
+        .filter(models.MealLog.user_id == user_id)
+        .group_by(func.to_char(models.MealLog.meal_time, 'YYYY-MM-DD'))
+        .order_by(func.to_char(models.MealLog.meal_time, 'YYYY-MM-DD').desc())
+        .all()
+    )
+
+    return [
+        schemas.DailyNutritionSummary(
+            date=row[0],
+            total_calories_kcal=float(row[1] or 0),
+            total_protein_g=float(row[2] or 0),
+            total_carbs_g=float(row[3] or 0),
+            total_fat_g=float(row[4] or 0),
+        )
+        for row in results
+    ]
+
+
+# --- KDRI 프로필 기본값 (6-11개월, 2020) ---
+DEFAULT_KDRI = {
+    "energy_kcal": 700.0,   # 예시값: 실제 최신 기준으로 보정 필요
+    "protein_g": 13.0,
+    "carbs_g": 95.0,
+    "fat_g": 30.0,
+    "sodium_mg": 800.0,
+}
+
+
+@app.post("/api/v1/analysis/daily", response_model=schemas.DailyAnalysisResult)
+def analyze_daily(request: schemas.DailyAnalysisRequest, db: Session = Depends(get_db)):
+    """
+    특정 사용자/특정 일자의 총 섭취량을 집계하고, KDRI 프로필 대비 충족률과 부족 여부를 반환합니다.
+    """
+    date_str = request.date
+    kdri = request.kdri_profile.dict() if request.kdri_profile else DEFAULT_KDRI
+
+    # 일자 범위 계산 (00:00~23:59)
+    # PostgreSQL에서 날짜 문자열 비교를 위해 to_char 사용
+    totals = (
+        db.query(
+            func.coalesce(func.sum(models.MealLog.calories_kcal), 0),
+            func.coalesce(func.sum(models.MealLog.protein_g), 0),
+            func.coalesce(func.sum(models.MealLog.carbs_g), 0),
+            func.coalesce(func.sum(models.MealLog.fat_g), 0),
+        )
+        .filter(
+            models.MealLog.user_id == request.user_id,
+            func.to_char(models.MealLog.meal_time, 'YYYY-MM-DD') == date_str,
+        )
+        .one()
+    )
+
+    # 나트륨은 레시피 구성/재료를 통해 동적 합산
+    total_cal, total_protein, total_carbs, total_fat = [float(x or 0) for x in totals]
+    sodium_total_query = (
+        db.query(
+            func.coalesce(
+                func.sum(
+                    cast(models.MealLog.portion, Float)
+                    * (
+                        (cast(func.coalesce(models.Ingredient.sodium_mg, 0), Float) / 100.0)
+                        * cast(models.RecipeIngredient.quantity_grams, Float)
+                    )
+                ),
+                0.0,
+            )
+        )
+        .join(
+            models.RecipeIngredient,
+            models.RecipeIngredient.recipe_id == models.MealLog.recipe_id,
+        )
+        .join(
+            models.Ingredient,
+            models.Ingredient.id == models.RecipeIngredient.ingredient_id,
+        )
+        .filter(
+            models.MealLog.user_id == request.user_id,
+            func.to_char(models.MealLog.meal_time, 'YYYY-MM-DD') == date_str,
+        )
+    )
+    total_sodium = float(sodium_total_query.scalar() or 0.0)
+
+    result_totals = schemas.DailyNutrientTotals(
+        date=date_str,
+        calories_kcal=total_cal,
+        protein_g=total_protein,
+        carbs_g=total_carbs,
+        fat_g=total_fat,
+        sodium_mg=total_sodium,
+    )
+
+    def cov(total: float, target: float) -> float:
+        if target <= 0:
+            return 0.0
+        return max(0.0, min(200.0, round((total / target) * 100.0, 1)))
+
+    coverages = [
+        schemas.NutrientCoverage(name="에너지", total=total_cal, target=kdri["energy_kcal"], unit="kcal", coverage_pct=cov(total_cal, kdri["energy_kcal"]), deficiency=total_cal < kdri["energy_kcal"] * 0.8),
+        schemas.NutrientCoverage(name="단백질", total=total_protein, target=kdri["protein_g"], unit="g", coverage_pct=cov(total_protein, kdri["protein_g"]), deficiency=total_protein < kdri["protein_g"] * 0.8),
+        schemas.NutrientCoverage(name="탄수화물", total=total_carbs, target=kdri["carbs_g"], unit="g", coverage_pct=cov(total_carbs, kdri["carbs_g"]), deficiency=total_carbs < kdri["carbs_g"] * 0.8),
+        schemas.NutrientCoverage(name="지방", total=total_fat, target=kdri["fat_g"], unit="g", coverage_pct=cov(total_fat, kdri["fat_g"]), deficiency=total_fat < kdri["fat_g"] * 0.8),
+        schemas.NutrientCoverage(name="나트륨", total=total_sodium, target=kdri["sodium_mg"], unit="mg", coverage_pct=cov(total_sodium, kdri["sodium_mg"]), deficiency=total_sodium < kdri["sodium_mg"] * 0.8),
+    ]
+
+    return schemas.DailyAnalysisResult(totals=result_totals, coverages=coverages)
