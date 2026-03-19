@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     DB_HOST: str = 'localhost'
     DB_PORT: int = 5432
     DB_NAME: str = 'baby_food_db'
+    OPENAI_API_KEY: str = ''
 
     # 다른 필드 값들이 준비된 후, 동적으로 DATABASE_URL 값을 계산합니다.
     @computed_field

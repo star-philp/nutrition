@@ -26,9 +26,9 @@ from app.models.rag import KnowledgeChunk
 
 
 DOCS = [
-    (r"ml/data/foods/01+2020+한국인+영양소+섭취기준+에너지화+다량영양소.pdf", "pdf", "KDRI-2020"),
-    (r"ml/data/foods/02+2020+한국인+영양소+섭취기준+비타민.pdf", "pdf", "KDRI-2020"),
-    (r"ml/data/foods/03+2020+한국인+영양소+섭취기준+무기질.pdf", "pdf", "KDRI-2020"),
+    (os.path.join(BACKEND_DIR, "..", "ml", "data", "foods", "01+2020+한국인+영양소+섭취기준+에너지화+다량영양소.pdf"), "pdf", "KDRI-2020"),
+    (os.path.join(BACKEND_DIR, "..", "ml", "data", "foods", "02+2020+한국인+영양소+섭취기준+비타민.pdf"), "pdf", "KDRI-2020"),
+    (os.path.join(BACKEND_DIR, "..", "ml", "data", "foods", "03+2020+한국인+영양소+섭취기준+무기질.pdf"), "pdf", "KDRI-2020"),
 ]
 
 

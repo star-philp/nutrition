@@ -24,13 +24,14 @@ function App() {
   // RAG 검색 상태
   const [ragQuery, setRagQuery] = useState('');
   const [ragResults, setRagResults] = useState([]);
+  const [ragAnswer, setRagAnswer] = useState(null);
   const [ragLoading, setRagLoading] = useState(false);
   const [ragError, setRagError] = useState(null);
 
 
   // 레시피 목록 불러오기
   useEffect(() => {
-    axios.get('http://localhost:8000/api/v1/recipes')
+    axios.get('http://localhost:8080/api/v1/recipes')
       .then(response => {
         console.log("API로부터 받은 레시피 데이터:", response.data);
         setRecipes(response.data);
@@ -44,7 +45,7 @@ function App() {
   // 식단 일지 데이터 불러오기
   const fetchMealLogs = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/api/v1/users/1/meal-logs/'); // user_id=1은 임시
+      const response = await axios.get('http://localhost:8080/api/v1/users/1/meal-logs/'); // user_id=1은 임시
       setMealLogs(response.data);
     } catch (error) {
       console.error('식단 기록을 불러오는 중 오류 발생:', error);
@@ -54,7 +55,7 @@ function App() {
 
   const fetchDailySummary = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/api/v1/users/1/daily-summary');
+      const response = await axios.get('http://localhost:8080/api/v1/users/1/daily-summary');
       setDailySummary(response.data);
     } catch (error) {
       console.error('일일 합계를 불러오는 중 오류 발생:', error);
@@ -71,7 +72,7 @@ function App() {
   const handleAnalyzeDaily = async () => {
     if (!analysisDate) return;
     try {
-      const res = await axios.post('http://localhost:8000/api/v1/analysis/daily', {
+      const res = await axios.post('http://localhost:8080/api/v1/analysis/daily', {
         user_id: 1,
         date: analysisDate
       });
@@ -88,12 +89,14 @@ function App() {
     if (!q) return;
     setRagLoading(true);
     setRagError(null);
+    setRagAnswer(null);
     try {
-      const res = await axios.post('http://localhost:8000/api/v1/rag/search', {
+      const res = await axios.post('http://localhost:8080/api/v1/rag/search', {
         query: q,
         top_k: 5,
       });
-      setRagResults(res.data || []);
+      setRagAnswer(res.data?.answer || null);
+      setRagResults(res.data?.sources || []);
     } catch (e) {
       console.error('RAG 검색 실패:', e);
       setRagError('검색에 실패했습니다. 서버 상태를 확인해 주세요.');
@@ -128,7 +131,7 @@ function App() {
     formData.append('file', selectedFile);
 
     try {
-      const response = await axios.post('http://localhost:8000/api/v1/predict', formData, {
+      const response = await axios.post('http://localhost:8080/api/v1/predict', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -155,7 +158,7 @@ function App() {
     setPortion(selectedPortion); // portion 상태 저장
 
     try {
-      const response = await axios.post('http://localhost:8000/api/v1/nutrition/calculate', {
+      const response = await axios.post('http://localhost:8080/api/v1/nutrition/calculate', {
         recipe_id: selectedRecipe.recipe_id,
         portion: selectedPortion
       });
@@ -173,7 +176,7 @@ function App() {
     if (!selectedRecipe || !portion) return;
 
     try {
-      await axios.post('http://localhost:8000/api/v1/meal-logs/', {
+      await axios.post('http://localhost:8080/api/v1/meal-logs/', {
         recipe_id: selectedRecipe.recipe_id,
         portion: portion,
       });
@@ -386,16 +389,28 @@ function App() {
             </div>
             {ragError && <p style={{ color: 'red' }}>{ragError}</p>}
             <div className="log-container">
-              {ragResults.map((r) => (
-                <div key={r.id} className="log-item card">
-                  <p><strong>출처:</strong> {r.source} {r.version ? `(${r.version})` : ''}</p>
-                  <p><strong>유사도:</strong> {r.score !== undefined ? Number(r.score).toFixed(3) : '-'}</p>
-                  <p style={{ whiteSpace: 'pre-wrap' }}>
-                    {(r.content || '').slice(0, 400)}{(r.content || '').length > 400 ? '...' : ''}
+              {ragAnswer && (
+                <div className="rag-answer card" style={{ backgroundColor: '#1e1e1e', borderColor: '#333', marginBottom: '16px', color: '#ffffff' }}>
+                  <h3 style={{ color: '#ffffff' }}>✨ AI 요약 답변</h3>
+                  <div
+                    style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', fontSize: '1.05em' }}
+                    dangerouslySetInnerHTML={{
+                      __html: ragAnswer.replace(/\*\*(.*?)\*\*/g, '<strong style="color: #ff4d4d;">$1</strong>')
+                    }}
+                  />
+                </div>
+              )}
+
+              {ragResults.length > 0 && <h4 style={{ color: '#555', marginBottom: '8px' }}>참고 문서 출처</h4>}
+              {ragResults.map((r, index) => (
+                <div key={r.id} className="log-item card" style={{ padding: '12px', marginBottom: '8px', fontSize: '0.9em' }}>
+                  <p><strong>[{index + 1}] 출처:</strong> {r.source.split('/').pop()} {r.version ? `(${r.version})` : ''}</p>
+                  <p style={{ whiteSpace: 'pre-wrap', color: '#666', marginTop: '4px' }}>
+                    {(r.content || '').slice(0, 200)}{(r.content || '').length > 200 ? '...' : ''}
                   </p>
                 </div>
               ))}
-              {!ragLoading && ragResults.length === 0 && (
+              {!ragLoading && !ragAnswer && ragResults.length === 0 && (
                 <p>검색 결과가 없습니다.</p>
               )}
             </div>

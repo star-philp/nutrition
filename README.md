@@ -31,24 +31,42 @@
 
 ## 🚀 실행 방법
 
-### 1. 사전 준비
-
-- Python 3.9 이상 설치
-- 필요한 라이브러리 설치:
-  ```bash
-  pip install -r backend/requirements.txt
-  ```
+### 1. 데이터베이스 준비 (PostgreSQL)
+현재 프로젝트는 PostgreSQL을 사용합니다. 아래 정보로 DB와 사용자를 생성해야 합니다.
+- **사용자명:** `postgres`
+- **비밀번호:** `1234`
+- **데이터베이스명:** `baby_food_db`
+- **필수 확장:** DB 내에서 `CREATE EXTENSION IF NOT EXISTS vector;` 실행
 
 ### 2. 백엔드 서버 실행
 
 ```bash
 cd backend
-uvicorn main:app --reload
+# 가상환경 활성화 (필수)
+source ../venv/bin/activate
+# 패키지 설치
+pip install -r requirements.txt
+pip install Pillow # 이미지 처리 필수
+# 서버 실행 (포트 8080)
+PYTHONPATH=. python -m uvicorn app.main:app --port 8080 --reload
 ```
 
-### 3. 프론트엔드 실행
+### 3. 프론트엔드 서버 실행 (React + Vite)
 
-- `frontend/index.html` 파일을 브라우저에서 엽니다.
+```bash
+cd frontend
+# 의존성 모듈 설치 (최초 1회)
+npm install
+# 개발 서버 실행
+npm run dev
+```
+- 실행 후 브라우저에서 `http://localhost:5173/` 로 접속합니다.
+
+### 4. RAG AI 요약 기능 (OpenAI 연동)
+지식 검색(RAG) 결과를 자연스러운 문장으로 요약해서 보려면 `backend/.env` 파일을 만들고 아래와 같이 API 키를 설정해야 합니다.
+```bash
+OPENAI_API_KEY=sk-본인의_오픈AI_키
+```
 
 ---
 
