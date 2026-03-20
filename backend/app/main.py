@@ -13,12 +13,8 @@ from app.models.rag import KnowledgeChunk # Keep this for KnowledgeChunk
 from app.models.analysis import AnalysisRecord # 추가
 from app.schemas import recipe as schemas # Corrected this line
 from app.api import analysis_routes, rag_routes, user_routes # 추가된 라우터들
-from sqlalchemy import func, cast, Float
-from app.initial_data import initial_recipes, initial_ingredients, initial_recipe_ingredients # on_startup에서 사용
-
-# 데이터베이스에 테이블 자동 생성
-# __init__.py 파일에 모델들을 임포트 해두면 Base.metadata.create_all(bind=engine) 한 줄로 모든 테이블을 생성할 수 있습니다.
-Base.metadata.create_all(bind=engine)
+from sqlalchemy import text, func, cast, Float
+# Base.metadata.create_all(bind=engine) -> on_startup 내부로 이동하여 확장 기능 설치 후 실행되도록 합니다.
 
 # 업로드된 파일을 저장할 디렉토리
 UPLOAD_DIRECTORY = "./uploads"
@@ -292,6 +288,22 @@ def on_startup():
     # 애플리케이션 시작 시 DB 연결
     db = next(get_db())
     
+    # 0. pgvector 확장기능 활성화 (중요!)
+    try:
+        db.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        db.commit()
+        print("[INFO] pgvector 확장 기능을 성공적으로 활성화했습니다.")
+    except Exception as e:
+        print(f"[ERROR] pgvector 활성화 실패: {e}")
+        # 권한 문제 등으로 실패할 수 있으나, 이미 활성화되어 있을 수도 있으므로 계속 진행
+
+    # 0.5 데이터베이스 테이블 자동 생성
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("[INFO] 모든 데이터베이스 테이블이 생성되었습니다.")
+    except Exception as e:
+        print(f"[ERROR] 테이블 생성 실패: {e}")
+
     # 1. 테스트 사용자 생성 또는 확인
     get_or_create_test_user(db)
     
