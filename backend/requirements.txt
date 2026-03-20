@@ -62,5 +62,6 @@ pgvector
 sentence-transformers
 pypdf
 openai
+Pillow
 
 
