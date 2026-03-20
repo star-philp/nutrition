@@ -22,13 +22,12 @@ services:
       - key: FRONTEND_URL
         fromService:
           name: nutrition-frontend
-          type: static_site
+          type: static
           property: url
 
   # Frontend Static Site (Vite/React)
-  - type: static_site
+  - type: static
     name: nutrition-frontend
-    env: static
     buildCommand: cd frontend && npm install && npm run build
     publishPath: frontend/dist
     envVars:
