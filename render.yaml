@@ -22,14 +22,15 @@ services:
       - key: FRONTEND_URL
         fromService:
           name: nutrition-frontend
-          type: static
+          type: web
           property: url
 
   # Frontend Static Site (Vite/React)
-  - type: static
+  - type: web
     name: nutrition-frontend
+    env: static
     buildCommand: cd frontend && npm install && npm run build
-    publishPath: frontend/dist
+    staticPublishPath: frontend/dist
     envVars:
       - key: VITE_API_BASE_URL
         fromService:
