@@ -56,6 +56,7 @@ def get_model_and_classes():
 
 app = FastAPI()
 
+# --- CORS 설정 ---
 from app.core.config import settings
 origins = [
     "http://localhost",
@@ -72,11 +73,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API 라우터를 추가할 수 있습니다. (나중에 확장성을 위해)
-from app.api import rag_routes, analysis_routes
-# app.include_router(recipe_router) # This line was not in the original and not explicitly requested to be added.
+# --- 라우터 등록 (중복 제거) ---
+app.include_router(analysis_routes.router)
 app.include_router(rag_routes.router)
-app.include_router(analysis_routes.router)  # 추가
+app.include_router(user_routes.router)
 
 @app.get("/")
 def read_root():
@@ -270,82 +270,76 @@ def calculate_nutrition(request: schemas.NutritionCalculationRequest, db: Sessio
     
     return final_nutrition
 
-# --- User와 MealLog를 위한 API 엔드포인트 ---
+# --- 초기 데이터 생성 로직 ---
+from contextlib import asynccontextmanager
 
-# 임시 사용자 생성 함수 (테스트용)
-def get_or_create_test_user(db: Session):
-    # Base.metadata.create_all(bind=engine) # 이 부분은 Alembic으로 관리하는 것이 좋습니다.
-    test_user = db.query(models.User).filter(models.User.id == 1).first()
-    if not test_user:
-        test_user = models.User(id=1, username="testuser")
-        db.add(test_user)
-        db.commit()
-        db.refresh(test_user)
-    return test_user
-
-@app.on_event("startup")
-def on_startup():
-    # 애플리케이션 시작 시 DB 연결
-    db = next(get_db())
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 애플리케이션 시작 시 실행될 로직
+    from app.core.db import SessionLocal
+    from sqlalchemy import text
+    from app.initial_data import initial_recipes, initial_ingredients, initial_recipe_ingredients
     
-    # 0. pgvector 확장기능 활성화 (중요!)
+    db = SessionLocal()
     try:
-        db.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        db.commit()
-        print("[INFO] pgvector 확장 기능을 성공적으로 활성화했습니다.")
-    except Exception as e:
-        print(f"[ERROR] pgvector 활성화 실패: {e}")
-        # 권한 문제 등으로 실패할 수 있으나, 이미 활성화되어 있을 수도 있으므로 계속 진행
+        print("[INFO] DB 초기화 시작...")
+        # 1. pgvector 확장기능 활성화
+        try:
+            db.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            db.commit()
+            print("[INFO] pgvector 확장 기능 활성화 완료.")
+        except Exception as e:
+            print(f"[WARNING] pgvector 활성화 실패 (권한 문제일 수 있음): {e}")
 
-    # 0.5 데이터베이스 테이블 자동 생성
-    try:
-        Base.metadata.create_all(bind=engine)
-        print("[INFO] 모든 데이터베이스 테이블이 생성되었습니다.")
-    except Exception as e:
-        print(f"[ERROR] 테이블 생성 실패: {e}")
+        # 2. 테이블 생성
+        try:
+            Base.metadata.create_all(bind=engine)
+            print("[INFO] DB 테이블 생성/확인 완료.")
+        except Exception as e:
+            print(f"[ERROR] 테이블 생성 실패: {e}")
 
-    # 1. 테스트 사용자 생성 또는 확인
-    get_or_create_test_user(db)
+        # 3. 초기 데이터 삽입
+        try:
+            if db.query(models.Ingredient).count() == 0:
+                print("[INFO] 초기 식재료 데이터 삽입 중...")
+                for ing_data in initial_ingredients:
+                    db.add(models.Ingredient(**ing_data))
+                db.commit()
+                print("[INFO] 식재료 데이터 삽입 완료.")
+
+            if db.query(models.Recipe).count() == 0:
+                print("[INFO] 초기 레시피 데이터 삽입 중...")
+                for r_data in initial_recipes:
+                    db.add(models.Recipe(**r_data))
+                db.commit()
+                print("[INFO] 레시피 데이터 삽입 완료.")
+
+            if db.query(models.RecipeIngredient).count() == 0:
+                print("[INFO] 초기 레시피 구성 데이터 삽입 중...")
+                for ri_data in initial_recipe_ingredients:
+                    db.add(models.RecipeIngredient(**ri_data))
+                db.commit()
+                print("[INFO] 레시피 구성 데이터 삽입 완료.")
+
+            if db.query(models.User).count() == 0:
+                print("[INFO] 테스트 사용자 생성 중...")
+                db.add(models.User(id=1, username="testuser"))
+                db.commit()
+                print("[INFO] 테스트 사용자 생성 완료.")
+                
+        except Exception as e:
+            print(f"[ERROR] 초기 데이터 삽입 중 오류 발생: {e}")
+            db.rollback()
+
+    finally:
+        db.close()
     
-    # 2. 초기 식재료 데이터 생성
-    ingredient_count = db.query(models.Ingredient).count()
-    if ingredient_count == 0:
-        print("초기 식재료 데이터가 없습니다. 데이터베이스에 추가합니다...")
-        for ing_data in initial_ingredients:
-            db_ing = models.Ingredient(**ing_data)
-            db.add(db_ing)
-        db.commit()
-        print("초기 식재료 데이터 추가 완료.")
+    print("[INFO] 애플리케이션 시작 준비 완료!")
+    yield
+    # 애플리케이션 종료 시 실행될 로직 (필요시)
 
-    # 3. 초기 레시피 데이터 생성
-    recipe_count = db.query(models.Recipe).count()
-    if recipe_count == 0:
-        print("초기 레시피 데이터가 없습니다. 데이터베이스에 추가합니다...")
-        for recipe_data in initial_recipes:
-            db_recipe = models.Recipe(
-                recipe_id=recipe_data["recipe_id"],
-                recipe_name=recipe_data["recipe_name"],
-                category=recipe_data["category"],
-                description=recipe_data["description"]
-            )
-            db.add(db_recipe)
-        db.commit()
-        print("초기 레시피 데이터 추가 완료.")
-
-    # 4. 초기 레시피 구성 데이터 생성
-    recipe_ingredient_count = db.query(models.RecipeIngredient).count()
-    if recipe_ingredient_count == 0:
-        print("초기 레시피 구성 데이터가 없습니다. 데이터베이스에 추가합니다...")
-        for recipe_ing_data in initial_recipe_ingredients:
-            db_recipe_ing = models.RecipeIngredient(**recipe_ing_data)
-            db.add(db_recipe_ing)
-        db.commit()
-    print("초기 레시피 구성 데이터 추가 완료.")
-
-# 라우터 등록
-app.include_router(analysis_routes.router)
-app.include_router(rag_routes.router)
-app.include_router(user_routes.router)
+# FastAPI 인스턴스에 lifespan 적용
+app.router.lifespan_context = lifespan
 
 @app.post("/api/v1/meal-logs/", response_model=schemas.MealLog)
 def create_meal_log(
