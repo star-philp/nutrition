@@ -4,11 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List
 import shutil
 import os
-# 모델 추론을 위한 라이브러리 추가
-import numpy as np
-import tensorflow as tf
-from PIL import Image
-import io
+import os
+# 무거운 라이브러리들은 함수 내부에서 lazy import 하도록 변경하여 시작 속도를 높입니다.
 
 from app.core.db import engine, Base, get_db
 from app.models import recipe as models # Keep this for models.Recipe
@@ -46,6 +43,7 @@ def get_model_and_classes():
         return _model, _class_names
     
     try:
+        import tensorflow as tf # Lazy import
         print("[INFO] AI 모델 로딩 시도 중... (메모리 사용량이 높을 수 있습니다)")
         # 메모리 제한이 있는 환경(Render 무료 티어 등)을 위해 로딩 시점 조절
         _model = tf.keras.models.load_model(MODEL_PATH_ABS)
@@ -101,6 +99,11 @@ def read_recipes(db: Session = Depends(get_db)):
 # 이미지 전처리 함수
 def preprocess_image(image_bytes: bytes):
     """업로드된 이미지를 모델 입력에 맞게 전처리합니다."""
+    import numpy as np
+    import tensorflow as tf
+    from PIL import Image
+    import io
+    
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img = img.resize((224, 224))
     img_array = tf.keras.preprocessing.image.img_to_array(img)
