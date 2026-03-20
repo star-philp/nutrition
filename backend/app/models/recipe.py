@@ -11,8 +11,11 @@ class User(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
-    # 실제 프로덕션에서는 비밀번호를 해싱하여 저장해야 합니다.
-    # hashed_password = Column(String(255), nullable=False)
+    
+    # 개인화 프로필 정보 추가
+    birth_date = Column(DateTime, nullable=True) # 아기 생년월일
+    weight_kg = Column(Float, nullable=True)    # 현재 몸무게
+    allergies = Column(Text, nullable=True)     # 알레르기 유발 식품 (쉼표 구분 문자열 등)
     
     meal_logs = relationship("MealLog", back_populates="user")
 

@@ -128,3 +128,8 @@ Tools/
 # OS specific
 .DS_Store
 Thumbs.db
+
+# Project specific
+NUTRIRION_ENV_files/
+backend/uploads/
+backend/requirements_utf8.txt

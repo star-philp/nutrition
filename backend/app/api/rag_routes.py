@@ -155,22 +155,54 @@ def semantic_search(payload: RagSearchRequest, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-    # 3) OpenAI 문서 요약
+    # 3. OpenAI 문서 요약 (사용자 프로필 기반 개인화)
     from app.core.config import settings
+    from app.models.recipe import User
+    from datetime import datetime
+    
     answer = "문서에서 검색된 내용이 존재하지 않습니다."
     
     if sources:
         if getattr(settings, "OPENAI_API_KEY", None):
             import openai
             try:
+                # 사용자 프로필 정보 조회 (테스트용 user_id=1)
+                user = db.query(User).filter(User.id == 1).first()
+                user_info = ""
+                if user:
+                    age_str = "미상"
+                    if user.birth_date:
+                        delta = datetime.now() - user.birth_date
+                        age_str = f"생후 {delta.days // 30}개월"
+                    
+                    user_info = f"\n[대상 정보]\n- 연령: {age_str}\n- 몸무게: {user.weight_kg or '미상'}kg\n- 알레르기: {user.allergies or '없음'}\n"
+                    if user.allergies:
+                        user_info += f"⚠️ 주의: 사용자는 [{user.allergies}] 알레르기가 있으므로 관련 재료가 포함된 조언은 반드시 주의를 주거나 제외해줘.\n"
+
                 client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-                context_text = "\\n\\n".join([f"[{i+1}] {s.get('content', '')}" for i, s in enumerate(sources)])
-                prompt = f"다음은 참고할 문서 조각들입니다:\\n{context_text}\\n\\n위 내용을 참고하여 다음 질문에 한국어로 정리해 답변해주세요.\\n질문: {q_text}\\n\\n(참고한 문서 내용이 있다면 [1], [2] 형식으로 출처 번호를 달아주세요.)"
+                context_text = "\n\n".join([f"[{i+1}] {s.get('content', '')}" for i, s in enumerate(sources)])
+                
+                prompt = f"""
+                당신은 영유아 영양 전문가입니다. 아래 제공된 [참고 문서 조각]들과 [대상 정보]를 바탕으로 사용자의 질문에 한국어로 친절하게 답변해줘.
+                {user_info}
+                
+                [참고 문서 조각]
+                {context_text}
+                
+                [질문]
+                {q_text}
+                
+                [답변 가이드]
+                - 반드시 제공된 문서의 내용을 바탕으로 답변하되, 대상의 연령과 몸무게에 적합한 조언을 해줘.
+                - 알레르기 정보가 있다면 해당 재료를 포함하는 조언은 피하고 반드시 경고 메시지를 포함해줘.
+                - 중요한 수치나 정보는 **강조**해줘.
+                - 답변은 한국어로, 친절하고 신뢰감 있는 말투로 작성해줘.
+                """
                 
                 resp = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "당신은 영유아 영양 관리 전문가입니다. 오직 제공된 문서 내용에만 기반하여 질문에 답변하세요."},
+                        {"role": "system", "content": "당신은 신뢰할 수 있는 영유아 영양 가이드입니다."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3
@@ -178,9 +210,9 @@ def semantic_search(payload: RagSearchRequest, db: Session = Depends(get_db)):
                 answer = resp.choices[0].message.content
             except Exception as e:
                 print(f"OpenAI error: {e}")
-                answer = "OpenAI API 호출 중 오류가 발생했습니다. (서버 콘솔 확인)"
+                answer = "OpenAI API 호출 중 오류가 발생했습니다."
         else:
-            answer = "OpenAI API 키가 설정되지 않아 문장화된 요약 답변을 제공할 수 없습니다. 대신 아래 참고 문헌을 확인해주세요."
+            answer = "OpenAI API 키가 설정되지 않아 요약 답변을 제공할 수 없습니다."
 
     return {"answer": answer, "sources": sources}
 

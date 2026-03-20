@@ -11,9 +11,11 @@ from PIL import Image
 import io
 
 from app.core.db import engine, Base, get_db
-from app.models import recipe as models
-from app.models.rag import KnowledgeChunk
-from app.schemas import recipe as schemas
+from app.models import recipe as models # Keep this for models.Recipe
+from app.models.rag import KnowledgeChunk # Keep this for KnowledgeChunk
+from app.models.analysis import AnalysisRecord # 추가
+from app.schemas import recipe as schemas # Corrected this line
+from app.api import analysis_routes, rag_routes, user_routes # 추가된 라우터들
 from sqlalchemy import func, cast, Float
 from app.initial_data import initial_recipes, initial_ingredients, initial_recipe_ingredients # on_startup에서 사용
 
@@ -57,11 +59,12 @@ except Exception as e:
 
 app = FastAPI()
 
-# CORS 미들웨어 추가
+from app.core.config import settings
 origins = [
     "http://localhost",
     "http://localhost:5173",
-    "http://localhost:5174", # Vite가 사용하는 새 포트 추가
+    "http://localhost:5174",
+    settings.FRONTEND_URL,
 ]
 
 app.add_middleware(
@@ -73,9 +76,10 @@ app.add_middleware(
 )
 
 # API 라우터를 추가할 수 있습니다. (나중에 확장성을 위해)
-# from app.api.v1 import api_router
-from app.api import rag_routes
+from app.api import rag_routes, analysis_routes
+# app.include_router(recipe_router) # This line was not in the original and not explicitly requested to be added.
 app.include_router(rag_routes.router)
+app.include_router(analysis_routes.router)  # 추가
 
 @app.get("/")
 def read_root():
@@ -140,11 +144,82 @@ async def predict_image(db: Session = Depends(get_db), file: UploadFile = File(.
                 "recipe_name": recipe.recipe_name,
                 "score": pred["score"]
             })
+        else:
+            # DB에 없는 경우에도 최소한의 정보는 반환
+            top_predictions_with_recipe.append({
+                "recipe_id": "unknown",
+                "recipe_name": recipe_name_in_db,
+                "score": pred["score"]
+            })
+    
+    # 상위 3개만 유지
+    top_predictions_with_recipe = top_predictions_with_recipe[:3]
+        
+    # 1인분 기준 영양 정보 및 오늘의 섭취 상태 조회 (개인화 가이드용)
+    from datetime import datetime
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    # 1. 오늘의 총 섭취량 조회 (기존 analyze_daily 로직 활용)
+    # (여기서는 간단히 합계만 가져옴)
+    daily_totals = db.query(
+        func.coalesce(func.sum(models.MealLog.calories_kcal), 0),
+        func.coalesce(func.sum(models.MealLog.protein_g), 0),
+        func.coalesce(func.sum(models.MealLog.carbs_g), 0),
+        func.coalesce(func.sum(models.MealLog.fat_g), 0),
+    ).filter(
+        models.MealLog.user_id == 1,
+        func.to_char(models.MealLog.meal_time, 'YYYY-MM-DD') == today_str
+    ).one()
+    
+    # 2. 사용자 프로필 및 알레르기 정보 조회
+    user = db.query(models.User).filter(models.User.id == 1).first()
+    
+    # 3. AI 맞춤형 가이드 생성 (OpenAI 연동)
+    ai_guide = "영양 가이드를 생성할 수 없습니다."
+    from app.core.config import settings
+    if settings.OPENAI_API_KEY and top_predictions_with_recipe:
+        import openai
+        try:
+            top_recipe = top_predictions_with_recipe[0]
+            # 상위 인식된 음식의 상세 영양 정보 (임시 계산)
+            recipe_nutrition = calculate_nutrition_for_recipe(db, top_recipe["recipe_id"])
+            
+            user_context = f"""
+            - 현재 인식된 음식: {top_recipe['recipe_name']}
+            - 오늘 총 섭취량: 칼로리 {float(daily_totals[0])}kcal, 단백질 {float(daily_totals[1])}g, 탄수화물 {float(daily_totals[2])}g, 지방 {float(daily_totals[3])}g
+            - 아기 정보: {user.allergies if user and user.allergies else '없음'} 알레르기 주의
+            - 권장 기준: {DEFAULT_KDRI}
+            """
+            
+            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            guide_prompt = f"""
+            당신은 영유아 영양 전문가입니다. 사용자가 방금 찍은 음식 사진과 오늘 하루 전체 섭취 상태를 바탕으로 따뜻하고 전문적인 조언을 해주세요.
+            
+            {user_context}
+            
+            [답변 가이드]
+            1. 인식된 음식이 아기에게 어떤 영양적 도움을 주는지 설명해주세요.
+            2. 오늘 부족한 영양소(예: 아연, 단백질 등)가 있다면 언급하고, 다음 식사로 무엇을 먹으면 좋을지 추천해주세요.
+            3. 알레르기 정보가 있다면 반드시 주의 사항을 포함해주세요.
+            4. 중요한 단어나 추천 메뉴는 반드시 '**단어**' 형식(볼드 처리)으로 작성해주세요. (예: **단백질**, **소고기 미음**)
+            5. 한국어로 친절하게 2~3문장 내외로 작성해주세요.
+            """
+            
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "system", "content": "친절한 영아 영양 가이드입니다."}, {"role": "user", "content": guide_prompt}],
+                temperature=0.7
+            )
+            ai_guide = resp.choices[0].message.content
+        except Exception as e:
+            print(f"AI Guide Generation Error: {e}")
+            ai_guide = "영양 분석 중 오류가 발생했습니다."
 
     return {
         "filename": file.filename,
         "content_type": file.content_type,
-        "predictions": top_predictions_with_recipe
+        "predictions": top_predictions_with_recipe,
+        "ai_guide": ai_guide
     }
 
 # --- 새로운 영양 계산 헬퍼 함수 ---
@@ -246,7 +321,12 @@ def on_startup():
             db_recipe_ing = models.RecipeIngredient(**recipe_ing_data)
             db.add(db_recipe_ing)
         db.commit()
-        print("초기 레시피 구성 데이터 추가 완료.")
+    print("초기 레시피 구성 데이터 추가 완료.")
+
+# 라우터 등록
+app.include_router(analysis_routes.router)
+app.include_router(rag_routes.router)
+app.include_router(user_routes.router)
 
 @app.post("/api/v1/meal-logs/", response_model=schemas.MealLog)
 def create_meal_log(

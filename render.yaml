@@ -1,0 +1,30 @@
+services:
+  # Backend Web Service (FastAPI)
+  - type: web
+    name: nutrition-backend
+    env: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL_OVERRIDE
+        sync: false # User will provide their ngrok/tunnel URL here
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        fromService:
+          name: nutrition-frontend
+          type: static_site
+          property: url
+
+  # Frontend Static Site (Vite/React)
+  - type: static_site
+    name: nutrition-frontend
+    env: static
+    buildCommand: cd frontend && npm install && npm run build
+    publishPath: frontend/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        fromService:
+          name: nutrition-backend
+          type: web
+          property: url
