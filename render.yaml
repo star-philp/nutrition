@@ -1,7 +1,7 @@
 databases:
   - name: nutrition-db
     databaseName: baby_food_db
-    user: postgres
+    user: baby_food_user
     plan: free # Managed Postgres free tier
 
 services:
@@ -20,10 +20,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: FRONTEND_URL
-        fromService:
-          name: nutrition-frontend
-          type: web
-          property: url
+        value: https://nutrition-frontend.onrender.com
 
   # Frontend Static Site (Vite/React)
   - type: web
@@ -33,7 +30,4 @@ services:
     staticPublishPath: frontend/dist
     envVars:
       - key: VITE_API_BASE_URL
-        fromService:
-          name: nutrition-backend
-          type: web
-          property: url
+        value: https://nutrition-backend.onrender.com
