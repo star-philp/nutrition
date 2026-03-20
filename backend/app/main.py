@@ -28,32 +28,35 @@ UPLOAD_DIRECTORY = "./uploads"
 if not os.path.exists(UPLOAD_DIRECTORY):
     os.makedirs(UPLOAD_DIRECTORY)
 
-# --- AI 모델 로딩 ---
+# --- AI 모델 로딩 (지연 로딩 방식으로 변경) ---
 # 경로를 프로젝트 루트 기준으로 수정합니다.
 MODEL_PATH = "ml/model/food_classifier_model.h5"
 CLASS_NAMES_PATH = "ml/model/class_names.txt"
 
-# main.py 파일의 위치를 기준으로 상대 경로를 계산합니다.
-# __file__은 현재 파일의 경로를 나타냅니다.
-# os.path.abspath(__file__) -> 현재 파일의 절대 경로
-# os.path.dirname(...) -> 디렉토리 경로
-# os.path.join(..., '..', '..') -> 두 단계 상위 디렉토리로 이동 (backend/app -> nutrition_env)
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 MODEL_PATH_ABS = os.path.join(PROJECT_ROOT, MODEL_PATH)
 CLASS_NAMES_PATH_ABS = os.path.join(PROJECT_ROOT, CLASS_NAMES_PATH)
 
-model = None
-class_names = []
+_model = None
+_class_names = []
 
-try:
-    model = tf.keras.models.load_model(MODEL_PATH_ABS)
-    with open(CLASS_NAMES_PATH_ABS, 'r', encoding='utf-8') as f:
-        class_names = [line.strip() for line in f.readlines()]
-    print("[INFO] AI 모델과 클래스 이름을 성공적으로 불러왔습니다.")
-    print("클래스:", class_names)
-except Exception as e:
-    print(f"[ERROR] AI 모델 또는 클래스 파일 로딩에 실패했습니다: {e}")
-    model = None
+def get_model_and_classes():
+    global _model, _class_names
+    if _model is not None:
+        return _model, _class_names
+    
+    try:
+        print("[INFO] AI 모델 로딩 시도 중... (메모리 사용량이 높을 수 있습니다)")
+        # 메모리 제한이 있는 환경(Render 무료 티어 등)을 위해 로딩 시점 조절
+        _model = tf.keras.models.load_model(MODEL_PATH_ABS)
+        with open(CLASS_NAMES_PATH_ABS, 'r', encoding='utf-8') as f:
+            _class_names = [line.strip() for line in f.readlines()]
+        print("[INFO] AI 모델과 클래스 이름을 성공적으로 불러왔습니다.")
+        return _model, _class_names
+    except Exception as e:
+        print(f"[ERROR] AI 모델 로딩 실패: {e}")
+        print("[TIP] Render 무료 티어의 경우 메모리 부족(512MB)으로 로딩이 실패할 수 있습니다.")
+        return None, []
 # --------------------
 
 
@@ -110,8 +113,9 @@ async def predict_image(db: Session = Depends(get_db), file: UploadFile = File(.
     """
     업로드된 이미지를 받아, 훈련된 AI 모델로 예측하고 결과를 반환합니다.
     """
+    model, class_names = get_model_and_classes()
     if not model or not class_names:
-        raise HTTPException(status_code=500, detail="AI 모델이 준비되지 않았습니다.")
+        raise HTTPException(status_code=503, detail="AI 모델을 불러오지 못했습니다. 서버 메모리가 부족할 가능성이 큽니다.")
 
     # 파일 내용을 바이트로 읽기
     contents = await file.read()

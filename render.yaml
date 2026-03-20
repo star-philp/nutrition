@@ -11,7 +11,7 @@ services:
     name: nutrition-backend
     env: python
     plan: free # explicitly set to free
-    buildCommand: pip install -r backend/requirements.txt
+    buildCommand: pip install --no-cache-dir -r backend/requirements.txt
     startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
