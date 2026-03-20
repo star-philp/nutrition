@@ -1,10 +1,10 @@
-services:
-  # Managed PostgreSQL Database
-  - type: db
-    name: nutrition-db
+databases:
+  - name: nutrition-db
     databaseName: baby_food_db
     user: postgres
     plan: free # Managed Postgres free tier
+
+services:
 
   # Backend Web Service (FastAPI)
   - type: web
