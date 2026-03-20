@@ -9,14 +9,14 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
     DB_NAME: str = 'baby_food_db'
     FRONTEND_URL: str = 'http://localhost:5173'
-    DATABASE_URL_OVERRIDE: str | None = None
+    DATABASE_URL: str | None = None
 
     # 다른 필드 값들이 준비된 후, 동적으로 DATABASE_URL 값을 계산합니다.
     @computed_field
     @property
-    def DATABASE_URL(self) -> str:
-        if self.DATABASE_URL_OVERRIDE:
-            return self.DATABASE_URL_OVERRIDE
+    def get_database_url(self) -> str:
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
         return str(PostgresDsn.build(
             scheme="postgresql",
             username=self.DB_USER,
