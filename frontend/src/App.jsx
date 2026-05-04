@@ -45,7 +45,8 @@ function App() {
   const [profile, setProfile] = useState({
     birth_date: '',
     weight_kg: '',
-    allergies: ''
+    allergies: '',
+    caution_ingredients: ''
   });
 
 
@@ -267,7 +268,8 @@ function App() {
       setProfile({
         birth_date: res.data.birth_date ? res.data.birth_date.split('T')[0] : '',
         weight_kg: res.data.weight_kg || '',
-        allergies: res.data.allergies || ''
+        allergies: res.data.allergies || '',
+        caution_ingredients: res.data.caution_ingredients || ''
       });
     } catch (e) {
       console.error('프로필 조회 실패:', e);
@@ -280,7 +282,8 @@ function App() {
       await axios.put(`${API_BASE_URL}/api/v1/users/1`, {
         birth_date: profile.birth_date,
         weight_kg: parseFloat(profile.weight_kg) || null,
-        allergies: profile.allergies
+        allergies: profile.allergies,
+        caution_ingredients: profile.caution_ingredients
       });
       alert('아기 정보가 성공적으로 저장되었습니다!');
     } catch (e) {
@@ -349,14 +352,22 @@ function App() {
                 />
               </div>
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>알레르기 정보</label>
+                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>⚠️ 알레르기 수첩</label>
                 <textarea
                   value={profile.allergies}
                   onChange={(e) => setProfile({ ...profile, allergies: e.target.value })}
                   placeholder="예: 계란, 우유, 땅콩 (쉼표로 구분)"
-                  style={{ width: '100%', padding: '10px', minHeight: '80px', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '10px', minHeight: '60px', boxSizing: 'border-box', marginBottom: '10px' }}
                 />
-                <small style={{ color: '#888' }}>설정된 알레르기 정보는 식단 추천 및 지식 검색 시 자동으로 고려됩니다.</small>
+                
+                <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>🔍 집중 관리 식재료 (안전 에이전트)</label>
+                <textarea
+                  value={profile.caution_ingredients}
+                  onChange={(e) => setProfile({ ...profile, caution_ingredients: e.target.value })}
+                  placeholder="주의 깊게 확인하고 싶은 식재료를 입력하세요. 예: 설탕, 소금, 견과류"
+                  style={{ width: '100%', padding: '10px', minHeight: '60px', boxSizing: 'border-box' }}
+                />
+                <small style={{ color: '#888' }}>여기에 등록된 식재료는 AI 안전 에이전트가 식단 분석 시 최우선적으로 체크합니다.</small>
               </div>
               <button type="submit" style={{ width: '100%', padding: '12px', fontSize: '1.1em' }}>설정 저장하기 ✨</button>
             </form>
@@ -506,6 +517,10 @@ function App() {
                     <li>단백질: {finalNutrition.protein_g.toFixed(1)} g</li>
                     <li>탄수화물: {finalNutrition.carbs_g.toFixed(1)} g</li>
                     <li>지방: {finalNutrition.fat_g.toFixed(1)} g</li>
+                    <li>당류: {(finalNutrition.sugar_g || 0).toFixed(1)} g</li>
+                    <li>나트륨: {(finalNutrition.sodium_mg || 0).toFixed(1)} mg</li>
+                    <li>콜레스테롤: {(finalNutrition.cholesterol_mg || 0).toFixed(1)} mg</li>
+                    <li>지방산(포화/트랜스): {(finalNutrition.saturated_fat_g || 0).toFixed(1)}g / {(finalNutrition.trans_fat_g || 0).toFixed(1)}g</li>
                   </ul>
                   <div className="button-group">
                     <button onClick={handleSaveLog}>기록 저장하기</button>
@@ -546,6 +561,7 @@ function App() {
                       <li>단백질: {parseFloat(log.protein_g).toFixed(1)} g</li>
                       <li>탄수화물: {parseFloat(log.carbs_g).toFixed(1)} g</li>
                       <li>지방: {parseFloat(log.fat_g).toFixed(1)} g</li>
+                      <li>당류/나트륨: {parseFloat(log.sugar_g || 0).toFixed(1)}g / {parseFloat(log.sodium_mg || 0).toFixed(1)}mg</li>
                     </ul>
                   </div>
                 ))}
@@ -559,12 +575,38 @@ function App() {
                 </label>
                 <button onClick={handleAnalyzeDaily} style={{ marginLeft: '12px' }}>분석하기</button>
                 {analysisResult && (
-                  <div className="analysis-card" style={{ marginTop: '12px' }}>
-                    <h3>{analysisResult.totals.date}</h3>
-                    <ul>
+                  <div className="analysis-card" style={{ marginTop: '12px', border: '1px solid #eee', borderRadius: '8px', padding: '15px', backgroundColor: '#f9f9f9' }}>
+                    <h3 style={{ margin: '0 0 15px 0', borderBottom: '1px solid #ddd', pb: '10px' }}>🗓️ {analysisResult.totals.date} 일일 분석 결과</h3>
+                    
+                    {/* 나트륨 과다 특별 경고 */}
+                    {analysisResult.coverages.find(c => c.name === "나트륨" && c.excess) && (
+                      <div style={{ backgroundColor: '#fff0f0', border: '2px solid #ff4d4f', padding: '10px', borderRadius: '8px', marginBottom: '15px', color: '#ff4d4f', fontWeight: 'bold' }}>
+                        ⚠️ 나트륨 경고! 아기 월령 기준 권장량을 초과했습니다. 물을 충분히 먹이고 다음 끼니는 저염식으로 준비해주세요.
+                      </div>
+                    )}
+
+                    <ul style={{ listStyle: 'none', padding: 0 }}>
                       {analysisResult.coverages && analysisResult.coverages.map((c) => (
-                        <li key={c.name}>
-                          {c.name}: {Number(c.coverage_pct).toFixed(1)}% ({Number(c.total).toFixed(1)}/{c.target} {c.unit}) {c.deficiency ? '부족' : '적정'}
+                        <li key={c.name} style={{ marginBottom: '12px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+                            <strong>{c.name}</strong>
+                            <span style={{ 
+                              color: c.excess ? '#ff4d4f' : (c.deficiency ? '#faad14' : '#52c41a'),
+                              fontWeight: 'bold'
+                            }}>
+                              {c.excess ? '🚨 과다' : (c.deficiency ? '⚠️ 부족' : '✅ 적정')}
+                            </span>
+                          </div>
+                          <div style={{ width: '100%', backgroundColor: '#eee', height: '10px', borderRadius: '5px' }}>
+                            <div style={{ 
+                              width: `${Math.min(c.coverage_pct, 100)}%`, 
+                              backgroundColor: c.excess ? '#ff4d4f' : (c.deficiency ? '#faad14' : '#52c41a'),
+                              height: '100%',
+                              borderRadius: '5px',
+                              transition: 'width 0.5s ease-in-out'
+                            }}></div>
+                          </div>
+                          <small style={{ color: '#666' }}>{Number(c.coverage_pct).toFixed(1)}% ({Number(c.total).toFixed(1)}/{c.target} {c.unit})</small>
                         </li>
                       ))}
                     </ul>
@@ -582,6 +624,7 @@ function App() {
                       <li>총 단백질: {day.total_protein_g.toFixed(1)} g</li>
                       <li>총 탄수화물: {day.total_carbs_g.toFixed(1)} g</li>
                       <li>총 지방: {day.total_fat_g.toFixed(1)} g</li>
+                      <li>총 당류/나트륨: {(day.total_sugar_g || 0).toFixed(1)}g / {(day.total_sodium_mg || 0).toFixed(1)}mg</li>
                     </ul>
                   </div>
                 ))}

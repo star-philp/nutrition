@@ -94,6 +94,10 @@ def load_into_db(db: Session) -> None:
     col_fat = _find_column_base(df, "지방")
     col_carbs = _find_column_base(df, "탄수화물")
     col_sodium = _find_column_base(df, "나트륨")
+    col_sugar = _find_column_base(df, "총당류")
+    col_cholesterol = _find_column_base(df, "콜레스테롤")
+    col_sat_fat = _find_column_base(df, "포화지방산")
+    col_trans_fat = _find_column_base(df, "트랜스지방산")
 
     missing = [
         ("식품명", col_food_name),
@@ -102,6 +106,10 @@ def load_into_db(db: Session) -> None:
         ("지방(g)", col_fat),
         ("탄수화물(g)", col_carbs),
         ("나트륨(mg)", col_sodium),
+        ("당류(g)", col_sugar),
+        ("콜레스테롤(mg)", col_cholesterol),
+        ("포화지방", col_sat_fat),
+        ("트랜스지방", col_trans_fat),
     ]
     for label, col in missing:
         if col is None:
@@ -120,6 +128,10 @@ def load_into_db(db: Session) -> None:
         fat = _to_float(row[col_fat]) if col_fat else None
         carbs = _to_float(row[col_carbs]) if col_carbs else None
         sodium = _to_float(row[col_sodium]) if col_sodium else None
+        sugar = _to_float(row[col_sugar]) if col_sugar else None
+        cholesterol = _to_float(row[col_cholesterol]) if col_cholesterol else None
+        sat_fat = _to_float(row[col_sat_fat]) if col_sat_fat else None
+        trans_fat = _to_float(row[col_trans_fat]) if col_trans_fat else None
 
         # upsert by name
         ing = db.query(models.Ingredient).filter(models.Ingredient.name == name).first()
@@ -131,6 +143,10 @@ def load_into_db(db: Session) -> None:
                 fat_g=fat,
                 carbs_g=carbs,
                 sodium_mg=sodium,
+                sugar_g=sugar,
+                cholesterol_mg=cholesterol,
+                saturated_fat_g=sat_fat,
+                trans_fat_g=trans_fat,
                 source="KoreanFoodCompDB10.2",
             )
             db.add(ing)
@@ -147,6 +163,14 @@ def load_into_db(db: Session) -> None:
                 ing.carbs_g = carbs; changed = True
             if sodium is not None:
                 ing.sodium_mg = sodium; changed = True
+            if sugar is not None:
+                ing.sugar_g = sugar; changed = True
+            if cholesterol is not None:
+                ing.cholesterol_mg = cholesterol; changed = True
+            if sat_fat is not None:
+                ing.saturated_fat_g = sat_fat; changed = True
+            if trans_fat is not None:
+                ing.trans_fat_g = trans_fat; changed = True
             if changed:
                 updated += 1
 

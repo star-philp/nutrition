@@ -83,14 +83,37 @@ def semantic_search(payload: RagSearchRequest, db: Session = Depends(get_db)):
         rows = run_like(like_patterns)
 
         tokens = [t for t in re.split(r"[^0-9A-Za-z가-힣]+", q_text) if t]
-        if not rows and tokens:
+        
+        # AND 검색 (모든 토큰 포함)
+        if not rows and len(tokens) > 1:
             query = db.query(KnowledgeChunk)
             for t in tokens:
+                if len(t) < 1: continue
                 tl = f"%{t}%"
                 query = query.filter((KnowledgeChunk.title.ilike(tl)) | (KnowledgeChunk.content.ilike(tl)))
             rows = query.limit(int(payload.top_k)).all()
+            
+        # OR 검색 (일부 토큰이라도 포함 - 검색 품질 향상을 위한 Fallback)
         if not rows and tokens:
-            rows = run_like([f"%{t}%" for t in tokens])
+            from sqlalchemy import case, literal_column
+            # 토큰 중 최소 2개 이상 혹은 검색어가 짧으면 1개 이상 포함된 것 찾기
+            or_conds = []
+            score_expr = literal_column("0")
+            for t in tokens:
+                if len(t) < 1: continue
+                tl = f"%{t}%"
+                match_cond = (KnowledgeChunk.title.ilike(tl)) | (KnowledgeChunk.content.ilike(tl))
+                or_conds.append(match_cond)
+                # 매칭되는 토큰 수에 따라 가중치 부여
+                score_expr += case((match_cond, 1), else_=0)
+            
+            rows = (
+                db.query(KnowledgeChunk)
+                .filter(or_(*or_conds))
+                .order_by(score_expr.desc()) # 많이 매칭된 순서대로
+                .limit(int(payload.top_k))
+                .all()
+            )
 
         if rows:
             seen = set()
@@ -127,7 +150,8 @@ def semantic_search(payload: RagSearchRequest, db: Session = Depends(get_db)):
                     "highlight": highlight,
                 })
             sources = results[: int(payload.top_k)]
-    except Exception:
+    except Exception as e:
+        print(f"Text search error: {e}")
         pass
 
     # 2) (옵션) 임베딩/pgvector 검색 — 텍스트/결과가 비었을 때만 시도

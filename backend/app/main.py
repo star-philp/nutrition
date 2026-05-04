@@ -148,12 +148,21 @@ async def predict_image(db: Session = Depends(get_db), file: UploadFile = File(.
                 "score": pred["score"]
             })
         else:
-            # DB에 없는 경우에도 최소한의 정보는 반환
-            top_predictions_with_recipe.append({
-                "recipe_id": "unknown",
-                "recipe_name": recipe_name_in_db,
-                "score": pred["score"]
-            })
+            # 2차 검색: 식약처 Ingredient 데이터베이스 조회 (퍼지 검색)
+            ingredient = db.query(models.Ingredient).filter(models.Ingredient.name.ilike(f"%{recipe_name_in_db}%")).first()
+            if ingredient:
+                top_predictions_with_recipe.append({
+                    "recipe_id": f"ing_{ingredient.id}",
+                    "recipe_name": ingredient.name,
+                    "score": pred["score"]
+                })
+            else:
+                # DB에 없는 경우에도 최소한의 정보는 반환
+                top_predictions_with_recipe.append({
+                    "recipe_id": "unknown",
+                    "recipe_name": recipe_name_in_db,
+                    "score": pred["score"]
+                })
     
     # 상위 3개만 유지
     top_predictions_with_recipe = top_predictions_with_recipe[:3]
@@ -181,42 +190,41 @@ async def predict_image(db: Session = Depends(get_db), file: UploadFile = File(.
     ai_guide = "영양 가이드를 생성할 수 없습니다."
     from app.core.config import settings
     if settings.OPENAI_API_KEY and top_predictions_with_recipe:
-        import openai
         try:
             top_recipe = top_predictions_with_recipe[0]
-            # 상위 인식된 음식의 상세 영양 정보 (임시 계산)
-            recipe_nutrition = calculate_nutrition_for_recipe(db, top_recipe["recipe_id"])
             
-            user_context = f"""
-            - 현재 인식된 음식: {top_recipe['recipe_name']}
-            - 오늘 총 섭취량: 칼로리 {float(daily_totals[0])}kcal, 단백질 {float(daily_totals[1])}g, 탄수화물 {float(daily_totals[2])}g, 지방 {float(daily_totals[3])}g
-            - 아기 정보: {user.allergies if user and user.allergies else '없음'} 알레르기 주의
-            - 권장 기준: {DEFAULT_KDRI}
-            """
+            # MAS 파이프라인에 주입할 데이터 정리
+            nutrition_data = {} # API에서 이미 calculate 된 것은 없으므로 추후 고도화 가능
             
-            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-            guide_prompt = f"""
-            당신은 영유아 영양 전문가입니다. 사용자가 방금 찍은 음식 사진과 오늘 하루 전체 섭취 상태를 바탕으로 따뜻하고 전문적인 조언을 해주세요.
+            daily_totals_dict = {
+                'calories': float(daily_totals[0]),
+                'protein': float(daily_totals[1]),
+                'carbs': float(daily_totals[2]),
+                'fat': float(daily_totals[3])
+            }
             
-            {user_context}
+            user_allergies = user.allergies if user and user.allergies else ''
+            user_caution = user.caution_ingredients if user and user.caution_ingredients else ''
+            age_months = calculate_age_months(user.birth_date) if user else 9
+            kdri = get_kdri_by_age(age_months)
             
-            [답변 가이드]
-            1. 인식된 음식이 아기에게 어떤 영양적 도움을 주는지 설명해주세요.
-            2. 오늘 부족한 영양소(예: 아연, 단백질 등)가 있다면 언급하고, 다음 식사로 무엇을 먹으면 좋을지 추천해주세요.
-            3. 알레르기 정보가 있다면 반드시 주의 사항을 포함해주세요.
-            4. 중요한 단어나 추천 메뉴는 반드시 '**단어**' 형식(볼드 처리)으로 작성해주세요. (예: **단백질**, **소고기 미음**)
-            5. 한국어로 친절하게 2~3문장 내외로 작성해주세요.
-            """
+            # 새로 만든 Multi-Agent System 오케스트레이터 호출
+            from app.agents.mas_orchestrator import run_mas_scenario
             
-            resp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": "친절한 영아 영양 가이드입니다."}, {"role": "user", "content": guide_prompt}],
-                temperature=0.7
+            ai_guide = run_mas_scenario(
+                recipe_name=top_recipe['recipe_name'],
+                nutrition_data=nutrition_data,
+                daily_totals=daily_totals_dict,
+                kdri=kdri,
+                age_months=age_months,
+                allergies=user_allergies,
+                caution_ingredients=user_caution,
+                api_key=settings.OPENAI_API_KEY
             )
-            ai_guide = resp.choices[0].message.content
+            
         except Exception as e:
-            print(f"AI Guide Generation Error: {e}")
-            ai_guide = "영양 분석 중 오류가 발생했습니다."
+            print(f"[MAS] 통합 에이전트 실행 중 오류: {e}")
+            ai_guide = "에이전트 통합 분석 중 오류가 발생했습니다."
 
     return {
         "filename": file.filename,
@@ -227,28 +235,55 @@ async def predict_image(db: Session = Depends(get_db), file: UploadFile = File(.
 
 # --- 새로운 영양 계산 헬퍼 함수 ---
 def calculate_nutrition_for_recipe(db: Session, recipe_id: str) -> schemas.CalculatedNutrition:
+    # 1) 식약처 기본 데이터(Ingredient) 직접 조회 처리 ("ing_" 접두사)
+    if recipe_id.startswith("ing_"):
+        ing_id = int(recipe_id.replace("ing_", ""))
+        ingredient = db.query(models.Ingredient).filter(models.Ingredient.id == ing_id).first()
+        if not ingredient:
+            raise HTTPException(status_code=404, detail="해당 식약처 데이터를 찾을 수 없습니다.")
+        return schemas.CalculatedNutrition(
+            calories_kcal=float(ingredient.calories_kcal or 0),
+            protein_g=float(ingredient.protein_g or 0),
+            carbs_g=float(ingredient.carbs_g or 0),
+            fat_g=float(ingredient.fat_g or 0),
+            sugar_g=float(ingredient.sugar_g or 0),
+            sodium_mg=float(ingredient.sodium_mg or 0),
+            cholesterol_mg=float(ingredient.cholesterol_mg or 0),
+            saturated_fat_g=float(ingredient.saturated_fat_g or 0),
+            trans_fat_g=float(ingredient.trans_fat_g or 0)
+        )
+
+    # 2) 복합 레시피(Recipe) 기반 처리
     recipe_ingredients = db.query(models.RecipeIngredient).filter(models.RecipeIngredient.recipe_id == recipe_id).all()
     
     if not recipe_ingredients:
         raise HTTPException(status_code=404, detail="해당 레시피의 재료 정보를 찾을 수 없습니다.")
 
-    total_calories = 0
-    total_protein = 0
-    total_carbs = 0
-    total_fat = 0
+    total_calories, total_protein, total_carbs, total_fat = 0, 0, 0, 0
+    total_sugar, total_sodium, total_cholesterol, total_sat_fat, total_trans_fat = 0, 0, 0, 0, 0
 
     for item in recipe_ingredients:
-        # ingredient.calories_kcal는 Numeric(Decimal) 타입이므로 float으로 변환
-        total_calories += (float(item.ingredient.calories_kcal) / 100) * item.quantity_grams
-        total_protein += (float(item.ingredient.protein_g) / 100) * item.quantity_grams
-        total_carbs += (float(item.ingredient.carbs_g) / 100) * item.quantity_grams
-        total_fat += (float(item.ingredient.fat_g) / 100) * item.quantity_grams
+        ratio = item.quantity_grams / 100.0
+        total_calories += float(item.ingredient.calories_kcal or 0) * ratio
+        total_protein += float(item.ingredient.protein_g or 0) * ratio
+        total_carbs += float(item.ingredient.carbs_g or 0) * ratio
+        total_fat += float(item.ingredient.fat_g or 0) * ratio
+        total_sugar += float(item.ingredient.sugar_g or 0) * ratio
+        total_sodium += float(item.ingredient.sodium_mg or 0) * ratio
+        total_cholesterol += float(item.ingredient.cholesterol_mg or 0) * ratio
+        total_sat_fat += float(item.ingredient.saturated_fat_g or 0) * ratio
+        total_trans_fat += float(item.ingredient.trans_fat_g or 0) * ratio
 
     return schemas.CalculatedNutrition(
         calories_kcal=total_calories,
         protein_g=total_protein,
         carbs_g=total_carbs,
-        fat_g=total_fat
+        fat_g=total_fat,
+        sugar_g=total_sugar,
+        sodium_mg=total_sodium,
+        cholesterol_mg=total_cholesterol,
+        saturated_fat_g=total_sat_fat,
+        trans_fat_g=total_trans_fat
     )
 
 
@@ -266,6 +301,11 @@ def calculate_nutrition(request: schemas.NutritionCalculationRequest, db: Sessio
         protein_g=base_nutrition.protein_g * request.portion,
         carbs_g=base_nutrition.carbs_g * request.portion,
         fat_g=base_nutrition.fat_g * request.portion,
+        sugar_g=base_nutrition.sugar_g * request.portion,
+        sodium_mg=base_nutrition.sodium_mg * request.portion,
+        cholesterol_mg=base_nutrition.cholesterol_mg * request.portion,
+        saturated_fat_g=base_nutrition.saturated_fat_g * request.portion,
+        trans_fat_g=base_nutrition.trans_fat_g * request.portion,
     )
     
     return final_nutrition
@@ -366,7 +406,12 @@ def create_meal_log(
         calories_kcal=calculated_calories,
         protein_g=calculated_protein,
         carbs_g=calculated_carbs,
-        fat_g=calculated_fat
+        fat_g=calculated_fat,
+        sugar_g=base_nutrition.sugar_g * meal_log_data.portion,
+        sodium_mg=base_nutrition.sodium_mg * meal_log_data.portion,
+        cholesterol_mg=base_nutrition.cholesterol_mg * meal_log_data.portion,
+        saturated_fat_g=base_nutrition.saturated_fat_g * meal_log_data.portion,
+        trans_fat_g=base_nutrition.trans_fat_g * meal_log_data.portion
     )
     
     db.add(db_meal_log)
@@ -395,6 +440,11 @@ def read_daily_summary(user_id: int, db: Session = Depends(get_db)):
             func.sum(models.MealLog.protein_g).label('total_protein_g'),
             func.sum(models.MealLog.carbs_g).label('total_carbs_g'),
             func.sum(models.MealLog.fat_g).label('total_fat_g'),
+            func.sum(models.MealLog.sugar_g).label('total_sugar_g'),
+            func.sum(models.MealLog.sodium_mg).label('total_sodium_mg'),
+            func.sum(models.MealLog.cholesterol_mg).label('total_cholesterol_mg'),
+            func.sum(models.MealLog.saturated_fat_g).label('total_saturated_fat_g'),
+            func.sum(models.MealLog.trans_fat_g).label('total_trans_fat_g'),
         )
         .filter(models.MealLog.user_id == user_id)
         .group_by(func.to_char(models.MealLog.meal_time, 'YYYY-MM-DD'))
@@ -409,19 +459,64 @@ def read_daily_summary(user_id: int, db: Session = Depends(get_db)):
             total_protein_g=float(row[2] or 0),
             total_carbs_g=float(row[3] or 0),
             total_fat_g=float(row[4] or 0),
+            total_sugar_g=float(row[5] or 0),
+            total_sodium_mg=float(row[6] or 0),
+            total_cholesterol_mg=float(row[7] or 0),
+            total_saturated_fat_g=float(row[8] or 0),
+            total_trans_fat_g=float(row[9] or 0),
         )
         for row in results
     ]
 
 
-# --- KDRI 프로필 기본값 (6-11개월, 2020) ---
-DEFAULT_KDRI = {
-    "energy_kcal": 700.0,   # 예시값: 실제 최신 기준으로 보정 필요
-    "protein_g": 13.0,
-    "carbs_g": 95.0,
-    "fat_g": 30.0,
-    "sodium_mg": 800.0,
-}
+# --- KDRI 계산 유틸리티 (2020 한국인 영양소 섭취기준 적용) ---
+def calculate_age_months(birth_date) -> int:
+    if not birth_date:
+        return 9 # 생년월일 없을 경우 기본 9개월(6-11개월 구간)로 가정
+    from datetime import datetime
+    today = datetime.now()
+    delta = today - birth_date
+    return delta.days // 30
+
+def get_kdri_by_age(age_months: int) -> dict:
+    # 0-5개월
+    if age_months < 6:
+        return {
+            "energy_kcal": 550.0,
+            "protein_g": 9.0,
+            "carbs_g": 60.0,
+            "fat_g": 30.0,
+            "sodium_mg": 110.0,
+        }
+    # 6-11개월
+    elif age_months < 12:
+        return {
+            "energy_kcal": 700.0,
+            "protein_g": 13.0,
+            "carbs_g": 95.0,
+            "fat_g": 30.0,
+            "sodium_mg": 810.0,
+        }
+    # 1-2세 (12-24개월+)
+    elif age_months < 36:
+        return {
+            "energy_kcal": 1000.0,
+            "protein_g": 20.0,
+            "carbs_g": 130.0,
+            "fat_g": 30.0,
+            "sodium_mg": 810.0,
+        }
+    # 3-5세 이상 (확장 가능)
+    else:
+        return {
+            "energy_kcal": 1400.0,
+            "protein_g": 25.0,
+            "carbs_g": 200.0,
+            "fat_g": 45.0,
+            "sodium_mg": 1000.0,
+        }
+
+DEFAULT_KDRI = get_kdri_by_age(9)
 
 
 @app.post("/api/v1/analysis/daily", response_model=schemas.DailyAnalysisResult)
@@ -430,7 +525,11 @@ def analyze_daily(request: schemas.DailyAnalysisRequest, db: Session = Depends(g
     특정 사용자/특정 일자의 총 섭취량을 집계하고, KDRI 프로필 대비 충족률과 부족 여부를 반환합니다.
     """
     date_str = request.date
-    kdri = request.kdri_profile.dict() if request.kdri_profile else DEFAULT_KDRI
+    
+    # 1. 사용자 월령 기반 KDRI 자동 결정
+    user = db.query(models.User).filter(models.User.id == request.user_id).first()
+    age_months = calculate_age_months(user.birth_date) if user else 9
+    kdri = request.kdri_profile.dict() if request.kdri_profile else get_kdri_by_age(age_months)
 
     # 일자 범위 계산 (00:00~23:59)
     # PostgreSQL에서 날짜 문자열 비교를 위해 to_char 사용
@@ -493,11 +592,41 @@ def analyze_daily(request: schemas.DailyAnalysisRequest, db: Session = Depends(g
         return max(0.0, min(200.0, round((total / target) * 100.0, 1)))
 
     coverages = [
-        schemas.NutrientCoverage(name="에너지", total=total_cal, target=kdri["energy_kcal"], unit="kcal", coverage_pct=cov(total_cal, kdri["energy_kcal"]), deficiency=total_cal < kdri["energy_kcal"] * 0.8),
-        schemas.NutrientCoverage(name="단백질", total=total_protein, target=kdri["protein_g"], unit="g", coverage_pct=cov(total_protein, kdri["protein_g"]), deficiency=total_protein < kdri["protein_g"] * 0.8),
-        schemas.NutrientCoverage(name="탄수화물", total=total_carbs, target=kdri["carbs_g"], unit="g", coverage_pct=cov(total_carbs, kdri["carbs_g"]), deficiency=total_carbs < kdri["carbs_g"] * 0.8),
-        schemas.NutrientCoverage(name="지방", total=total_fat, target=kdri["fat_g"], unit="g", coverage_pct=cov(total_fat, kdri["fat_g"]), deficiency=total_fat < kdri["fat_g"] * 0.8),
-        schemas.NutrientCoverage(name="나트륨", total=total_sodium, target=kdri["sodium_mg"], unit="mg", coverage_pct=cov(total_sodium, kdri["sodium_mg"]), deficiency=total_sodium < kdri["sodium_mg"] * 0.8),
+        schemas.NutrientCoverage(
+            name="에너지", total=total_cal, target=kdri["energy_kcal"], unit="kcal", 
+            coverage_pct=cov(total_cal, kdri["energy_kcal"]), 
+            deficiency=total_cal < kdri["energy_kcal"] * 0.8,
+            excess=total_cal > kdri["energy_kcal"] * 1.5
+        ),
+        schemas.NutrientCoverage(
+            name="단백질", total=total_protein, target=kdri["protein_g"], unit="g", 
+            coverage_pct=cov(total_protein, kdri["protein_g"]), 
+            deficiency=total_protein < kdri["protein_g"] * 0.8,
+            excess=total_protein > kdri["protein_g"] * 2.0
+        ),
+        schemas.NutrientCoverage(
+            name="탄수화물", total=total_carbs, target=kdri["carbs_g"], unit="g", 
+            coverage_pct=cov(total_carbs, kdri["carbs_g"]), 
+            deficiency=total_carbs < kdri["carbs_g"] * 0.8,
+            excess=total_carbs > kdri["carbs_g"] * 2.0
+        ),
+        schemas.NutrientCoverage(
+            name="지방", total=total_fat, target=kdri["fat_g"], unit="g", 
+            coverage_pct=cov(total_fat, kdri["fat_g"]), 
+            deficiency=total_fat < kdri["fat_g"] * 0.8,
+            excess=total_fat > kdri["fat_g"] * 2.0
+        ),
+        schemas.NutrientCoverage(
+            name="나트륨", total=total_sodium, target=kdri["sodium_mg"], unit="mg", 
+            coverage_pct=cov(total_sodium, kdri["sodium_mg"]), 
+            deficiency=total_sodium < kdri["sodium_mg"] * 0.5, # 나트륨은 부족 판단 완화
+            excess=total_sodium > kdri["sodium_mg"] * 1.2 # 나트륨은 120%만 넘어도 과다 표시
+        ),
     ]
 
     return schemas.DailyAnalysisResult(totals=result_totals, coverages=coverages)
+
+if __name__ == "__main__":
+    import uvicorn
+    # 직접 실행 시 포트 8080으로 실행되도록 설정
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8080, reload=True)

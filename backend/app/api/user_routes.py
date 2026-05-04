@@ -12,6 +12,7 @@ class UserProfileUpdate(BaseModel):
     birth_date: Optional[str] = None # ISO format (YYYY-MM-DD)
     weight_kg: Optional[float] = None
     allergies: Optional[str] = None
+    caution_ingredients: Optional[str] = None
 
 class UserProfileResponse(BaseModel):
     id: int
@@ -19,6 +20,7 @@ class UserProfileResponse(BaseModel):
     birth_date: Optional[datetime] = None
     weight_kg: Optional[float] = None
     allergies: Optional[str] = None
+    caution_ingredients: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -46,6 +48,8 @@ def update_user_profile(user_id: int, profile: UserProfileUpdate, db: Session = 
         user.weight_kg = profile.weight_kg
     if profile.allergies is not None:
         user.allergies = profile.allergies
+    if profile.caution_ingredients is not None:
+        user.caution_ingredients = profile.caution_ingredients
         
     db.commit()
     db.refresh(user)

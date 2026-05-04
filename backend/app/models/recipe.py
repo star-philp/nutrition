@@ -15,7 +15,8 @@ class User(Base):
     # 개인화 프로필 정보 추가
     birth_date = Column(DateTime, nullable=True) # 아기 생년월일
     weight_kg = Column(Float, nullable=True)    # 현재 몸무게
-    allergies = Column(Text, nullable=True)     # 알레르기 유발 식품 (쉼표 구분 문자열 등)
+    allergies = Column(Text, nullable=True)     # 알레르기 유발 식품
+    caution_ingredients = Column(Text, nullable=True) # 사용자가 직접 등록한 주의 식재료 (꿀 외 추가 관리용)
     
     meal_logs = relationship("MealLog", back_populates="user")
 
@@ -80,6 +81,11 @@ class MealLog(Base):
     protein_g = Column(Numeric(8, 2))
     carbs_g = Column(Numeric(8, 2))
     fat_g = Column(Numeric(8, 2))
+    sugar_g = Column(Numeric(8, 2), default=0.0)
+    sodium_mg = Column(Numeric(8, 2), default=0.0)
+    cholesterol_mg = Column(Numeric(8, 2), default=0.0)
+    saturated_fat_g = Column(Numeric(8, 2), default=0.0)
+    trans_fat_g = Column(Numeric(8, 2), default=0.0)
     
     user = relationship("User", back_populates="meal_logs")
     recipe = relationship("Recipe", back_populates="meal_logs") 

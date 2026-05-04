@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     DB_NAME: str = 'baby_food_db'
     FRONTEND_URL: str = 'http://localhost:5173'
     DATABASE_URL: str | None = None
+    OPENAI_API_KEY: str | None = None
+    MFDS_API_KEY: str | None = None
 
     # 다른 필드 값들이 준비된 후, 동적으로 DATABASE_URL 값을 계산합니다.
     @computed_field

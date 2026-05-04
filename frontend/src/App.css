@@ -59,9 +59,7 @@
   width: 100%;
 }
 
-.prediction-section,
-.portion-section,
-.nutrition-section {
+.prediction-section {
   margin-top: 20px;
   padding: 20px;
   border: 1px solid #eee;
@@ -69,15 +67,64 @@
   background-color: #f9f9f9;
 }
 
+.portion-section,
+.nutrition-section {
+  margin-top: 25px;
+  padding: 30px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
+  color: #ffffff;
+  box-shadow: 0 10px 25px rgba(79, 70, 229, 0.2);
+  text-align: left;
+}
+
+.portion-section h2,
+.nutrition-section h2 {
+  color: #ffffff;
+  margin-top: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  padding-bottom: 15px;
+  font-size: 1.5rem;
+}
+
+.portion-section p,
+.nutrition-section p {
+  color: #e0e7ff;
+  font-size: 1.1rem;
+}
+
+.nutrition-section ul {
+  list-style: none;
+  padding: 0;
+  margin: 20px 0;
+}
+
+.nutrition-section li {
+  margin: 12px 0;
+  font-size: 1.1rem;
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 8px;
+}
+
 .portion-section button,
 .nutrition-section button {
-  margin: 5px;
-  padding: 10px 15px;
-  border-radius: 5px;
-  border: 1px solid #ddd;
+  background-color: #ffffff;
+  color: #4f46e5;
+  border: none;
+  font-weight: bold;
+  padding: 12px 24px;
+  margin: 8px 5px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
   cursor: pointer;
 }
 
-.portion-section button:hover {
-  background-color: #e9e9e9;
+.portion-section button:hover,
+.nutrition-section button:hover {
+  background-color: #f3f4f6;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }

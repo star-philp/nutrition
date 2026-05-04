@@ -62,22 +62,30 @@ def chunk_text(text: str, max_chars: int = 1200) -> List[str]:
 
 def index_docs(db: Session) -> None:
     ensure_schema()
+    
+    # 기존 데이터 초기화 (중복 방지)
+    print("[INFO] 기존 지식 베이스를 초기화합니다...")
+    db.execute(text("TRUNCATE TABLE knowledge_chunks RESTART IDENTITY CASCADE;"))
+    db.commit()
+
     # 임베딩 사용 가능 여부 확인 (지연 임포트)
     embed_available = False
     model = None
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore
+        print("[INFO] 임베딩 모델 로딩 중 (paraphrase-multilingual-mpnet-base-v2)...")
         model = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
         embed_available = True
+        print("[INFO] 임베딩 모델 로딩 완료.")
     except Exception as e:
-        print(f"임베딩 비활성화: sentence-transformers 사용 불가 ({e})")
+        print(f"[WARNING] 임베딩 비활성화: sentence-transformers 사용 불가 ({e})")
     for path, src_type, version in DOCS:
         if not os.path.exists(path):
             print(f"경고: 파일 없음 → {path}")
             continue
         if src_type == "pdf":
-            text = extract_pdf_text(path)
-            chunks = chunk_text(text)
+            doc_text = extract_pdf_text(path)
+            chunks = chunk_text(doc_text)
         else:
             continue
         if not chunks:

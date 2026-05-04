@@ -26,6 +26,11 @@ class CalculatedNutrition(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
+    cholesterol_mg: float = 0.0
+    saturated_fat_g: float = 0.0
+    trans_fat_g: float = 0.0
 
 # --- 식단 일지(MealLog)를 위한 스키마 ---
 
@@ -45,6 +50,11 @@ class MealLog(MealLogBase):
     protein_g: float
     carbs_g: float
     fat_g: float
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
+    cholesterol_mg: float = 0.0
+    saturated_fat_g: float = 0.0
+    trans_fat_g: float = 0.0
     # 연관된 레시피 정보 포함
     recipe: RecipeBase
 
@@ -61,6 +71,10 @@ class UserCreate(UserBase):
 
 class User(UserBase):
     id: int
+    birth_date: Optional[datetime] = None
+    weight_kg: Optional[float] = None
+    allergies: Optional[str] = None
+    caution_ingredients: Optional[str] = None
     meal_logs: List[MealLog] = []
 
     class Config:
@@ -73,6 +87,11 @@ class DailyNutritionSummary(BaseModel):
     total_protein_g: float
     total_carbs_g: float
     total_fat_g: float
+    total_sugar_g: float = 0.0
+    total_sodium_mg: float = 0.0
+    total_cholesterol_mg: float = 0.0
+    total_saturated_fat_g: float = 0.0
+    total_trans_fat_g: float = 0.0
 
 # --- KDRI 기반 분석 요청/응답 스키마 ---
 class KDRIProfile(BaseModel):
@@ -95,6 +114,10 @@ class DailyNutrientTotals(BaseModel):
     carbs_g: float
     fat_g: float
     sodium_mg: float
+    sugar_g: float = 0.0
+    cholesterol_mg: float = 0.0
+    saturated_fat_g: float = 0.0
+    trans_fat_g: float = 0.0
 
 class NutrientCoverage(BaseModel):
     name: str
@@ -103,6 +126,7 @@ class NutrientCoverage(BaseModel):
     unit: str
     coverage_pct: float
     deficiency: bool
+    excess: bool = False
 
 class DailyAnalysisResult(BaseModel):
     totals: DailyNutrientTotals
